@@ -5,14 +5,13 @@ FP32_LM_HEAD=${3:-"0"}
 project_name='GSM8K-PPO'
 exp_name=${RUN_NAME}
 
-CONFIG_FILE_PATH=$(pwd)/.flashrl_config.yaml 
-flashrl setup --fn bf16 -o ${CONFIG_FILE_PATH}
-
 export VERL_LOGGING_LEVEL=DEBUG
 export VLLM_LOGGING_LEVEL=DEBUG
 export VLLM_CONFIGURE_LOGGING=1
 export FLASHRL_LOGGING_LEVEL=DEBUG
-export FLASHRL_CONFIG=${CONFIG_FILE_PATH}
+# bf16 config will skill quantization thus being model agnostic, and will only forces
+# vllm to output the actual logits used for sampling 
+export FLASHRL_CONFIG=LiyuanLucasLiu/Qwen2.5-32B-quantized.w8a8/flashrl_config.bf16.yaml
 export FLASHRL_LMHEAD_FP32=${FP32_LM_HEAD}
 
 python3 -m verl.trainer.main_ppo \

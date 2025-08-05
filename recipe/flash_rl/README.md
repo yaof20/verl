@@ -1,5 +1,26 @@
 The release is in an early-alpha stage, please expect some rough edges.
 
+## Environment 
+```bash 
+docker run \
+    --gpus all \
+    --name verl \
+    --shm-size=10g \
+    --ipc=host \
+    --ulimit memlock=-1 \
+    --ulimit stack=67108864 \
+    -e NCCL_P2P_LEVEL=NVL \
+    -it hiyouga/verl:ngc-th2.6.0-cu126-vllm0.8.3-flashinfer0.2.2-cxx11abi0
+```
+
+```bash 
+pip install flash-llm-rl
+git clone -b flash-rl https://github.com/yaof20/verl 
+cd verl & pip install --no-deps -e . 
+# optional, if using wandb for logging, run the following as well
+wandb login
+```
+
 ## GSM8K Experiments
 
 To prepare data:
@@ -36,13 +57,12 @@ bash recipe/flash_rl/eval_gsm8k.sh "checkpoints/GSM8K-PPO/gsm8k-PPO-Qwen2.5-0.5B
 
 ## DAPO Experiments
 
-
-To run Qwen0_5b ppo:
+To run Qwen32b dapo:
 ```bash
 bash recipe/flash_rl/dapo_qwen32b_bf16.sh
 ```
 
-To run Qwen0_5b ppo with Truncated Importance Sampling:
+To run Qwen32b dapo with Truncated Importance Sampling:
 ```bash
-bash recipe/flash_rl/dapo_qwen32b_bf16.sh flash-bf16-TIS-2 2
+bash recipe/flash_rl/dapo_qwen32b_bf16.sh flash-bf16-TIS-8 8
 ```
