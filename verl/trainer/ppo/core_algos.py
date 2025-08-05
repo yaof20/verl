@@ -645,8 +645,14 @@ def compute_value_loss(vpreds: torch.Tensor, returns: torch.Tensor, values: torc
     vf_clipfrac = verl_F.masked_mean(torch.gt(vf_losses2, vf_losses1).float(), response_mask)
     return vf_loss, vf_clipfrac
 
-
 def kl_penalty(logprob: torch.FloatTensor, ref_logprob: torch.FloatTensor, kl_penalty) -> torch.FloatTensor:
+
+    forward_score = kl_penalty_forward(logprob, ref_logprob, kl_penalty)
+    backward_score = 0.5 * (logprob - ref_logprob).square()
+
+    return backward_score - backward_score.detach() + forward_score.detach()
+
+def kl_penalty_forward(logprob: torch.FloatTensor, ref_logprob: torch.FloatTensor, kl_penalty) -> torch.FloatTensor:
     """Compute KL divergence given logprob and ref_logprob.
     Copied from https://github.com/huggingface/trl/blob/main/trl/trainer/ppo_trainer.py#L1104
     See more description in http://joschu.net/blog/kl-approx.html
