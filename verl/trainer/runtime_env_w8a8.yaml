@@ -1,0 +1,10 @@
+working_dir: ./
+excludes: ["/.git/"]
+env_vars:
+  TORCH_NCCL_AVOID_RECORD_STREAMS: "1"
+  FLASHRL_CONFIG: "LiyuanLucasLiu/Qwen2.5-32B-quantized.w8a8/flashrl_config.yaml"
+  FLASHRL_LOGGING_LEVEL: "DEBUG"
+  FLASHRL_LMHEAD_FP32: "0"
+  VERL_LOGGING_LEVEL: "DEBUG"
+  # If you are using vllm<=0.6.3, you might need to set the following environment variable to avoid bugs:
+  # VLLM_ATTENTION_BACKEND: "XFORMERS"

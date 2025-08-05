@@ -185,6 +185,9 @@ actor_rollout_ref:
     # Entropy regularization coefficient in PPO loss
     entropy_coeff: 0
     
+    # whether to apply the truncated Importance Sampling (-1 for no importance sampling)
+    imp_ratio_cap: 5
+
     # Whether to use KL loss instead of KL reward penalty. True for GRPO
     use_kl_loss: false
     
