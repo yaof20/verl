@@ -811,7 +811,7 @@ def compute_policy_loss(
     pg_losses = torch.where(advantages < 0, clip_pg_losses2, clip_pg_losses1)
 
     if imp_ratio_cap > 0 and rollout_log_probs is not None:
-        # Apply truncated importance sampling
+        # Apply truncated importance sampling -> https://fengyao.notion.site/off-policy-rl
         imp_ratio = torch.exp(old_log_prob - rollout_log_probs)
         imp_ratio = torch.clamp(imp_ratio, max=imp_ratio_cap)
         pg_losses = pg_losses * imp_ratio
@@ -897,7 +897,7 @@ def compute_policy_loss_vanilla(
     pg_losses = torch.where(advantages < 0, clip_pg_losses2, clip_pg_losses1)
 
     if imp_ratio_cap > 0 and rollout_log_probs is not None:
-        # Apply truncated importance sampling
+        # Apply truncated importance sampling -> https://fengyao.notion.site/off-policy-rl
         imp_ratio = torch.exp(old_log_prob - rollout_log_probs)
         imp_ratio = torch.clamp(imp_ratio, max=imp_ratio_cap)
         pg_losses = pg_losses * imp_ratio

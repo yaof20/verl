@@ -2,7 +2,7 @@
 set -xeuo pipefail
 
 project_name='DAPO'
-exp_name='DAPO-Qwen2.5-32B-TIS'  # Truncated Importance Sampling
+exp_name='DAPO-Qwen2.5-32B-TIS'  # Truncated Importance Sampling (TIS) -> https://fengyao.notion.site/off-policy-rl
 
 adv_estimator=grpo
 
@@ -55,6 +55,9 @@ actor_ppo_max_token_len=$((max_prompt_length + max_response_length))
 infer_ppo_max_token_len=$((max_prompt_length + max_response_length))
 offload=True
 gen_tp=4
+
+
+# Truncated Importance Sampling (TIS) -> https://fengyao.notion.site/off-policy-rl
 
 # Please note that server mode(agent loop) hasn't return rollout_log_probs for now.
 # so currently, server mode is not supported for TIS.
