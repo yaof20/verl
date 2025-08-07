@@ -9,7 +9,7 @@ export VERL_LOGGING_LEVEL=DEBUG
 export VLLM_LOGGING_LEVEL=DEBUG
 export VLLM_CONFIGURE_LOGGING=1
 export FLASHRL_LOGGING_LEVEL=DEBUG
-export FLASHRL_CONFIG=LiyuanLucasLiu/Qwen2-0.5B-Instruct-quantized.w8a8-RedHatAI/flashrl_config.yaml
+export FLASHRL_CONFIG=LiyuanLucasLiu/Qwen2.5-0.5B-Instruct-quantized.w8a8-RedHatAI/flashrl_config.yaml
 export FLASHRL_LMHEAD_FP32=${FP32_LM_HEAD}
 
 python3 -m verl.trainer.main_ppo \
