@@ -1,4 +1,4 @@
-odel_path=${1:-"checkpoints/GSM8K-PPO/gsm8k-PPO-Qwen2.5-0.5B-w8a8/*"}
+model_path=${1:-"checkpoints/GSM8K-PPO/gsm8k-PPO-Qwen2.5-0.5B-w8a8/*"}
 input_name=${2:-"actor"}
 output_name=${3:-"actor_huggingface"}
 hf_model_path=${4:-"Qwen/Qwen2.5-0.5B-Instruct"}
