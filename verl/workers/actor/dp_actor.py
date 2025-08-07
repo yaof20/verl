@@ -376,7 +376,7 @@ class DataParallelPPOActor(BasePPOActor):
         ]
         if self.config.use_kl_loss:
             select_keys.append("ref_log_prob")
-        if self.config.imp_ratio_cap > 0:
+        if self.config.imp_ratio_cap > 0 and "rollout_log_probs" in data.batch.keys():
             select_keys.append("rollout_log_probs")
 
         has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
