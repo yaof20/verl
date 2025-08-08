@@ -376,7 +376,7 @@ class DataParallelPPOActor(BasePPOActor):
         ]
         if self.config.use_kl_loss:
             select_keys.append("ref_log_prob")
-        if self.config.imp_ratio_cap > 0 and "rollout_log_probs" in data.batch.keys():
+        if self.config.tis_imp_ratio_cap > 0 and "rollout_log_probs" in data.batch.keys():
             select_keys.append("rollout_log_probs")
 
         has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
@@ -407,7 +407,7 @@ class DataParallelPPOActor(BasePPOActor):
                     model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
                     response_mask = model_inputs["response_mask"]
                     old_log_prob = model_inputs["old_log_probs"]
-                    rollout_log_probs = model_inputs["rollout_log_probs"] if self.config.imp_ratio_cap > 0 else None
+                    rollout_log_probs = model_inputs["rollout_log_probs"] if self.config.tis_imp_ratio_cap > 0 else None
                     advantages = model_inputs["advantages"]
 
                     entropy_coeff = self.config.entropy_coeff
@@ -439,7 +439,6 @@ class DataParallelPPOActor(BasePPOActor):
                         loss_agg_mode=loss_agg_mode,
                         config=self.config,
                         rollout_log_probs=rollout_log_probs,
-                        imp_ratio_cap=self.config.imp_ratio_cap,
                     )
 
                     if entropy_coeff != 0:
