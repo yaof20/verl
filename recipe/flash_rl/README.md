@@ -4,6 +4,10 @@
 
 Flash RL is an experimental implementation of reinforcement learning training for large language models using flash (quantized) rollout to boost throughput while preserving the performance by nearly 100%.
 
+For more details, checkout our blogs here:
+- [Your Efficient RL Framework Secretly Brings You Off-Policy RL Training](https://fengyao.notion.site/off-policy-rl)
+- FlashRL: Fast RL training with Quantized Rollouts (Drop in next week!)
+
 ## Table of Contents
 
 - [Flash RL - VeRL Flash Training](#flash-rl---verl-flash-training)
