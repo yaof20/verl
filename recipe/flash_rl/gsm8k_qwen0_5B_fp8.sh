@@ -1,0 +1,55 @@
+RUN_NAME=${1:-"gsm8k-PPO-Qwen2.5-0.5B-w8a8-on-policy"}
+CAP=${2:-"-1"} 
+FP32_LM_HEAD=${3:-"0"}
+
+project_name='GSM8K-PPO'
+exp_name=${RUN_NAME}
+
+export VERL_LOGGING_LEVEL=DEBUG
+export VLLM_LOGGING_LEVEL=DEBUG
+export VLLM_CONFIGURE_LOGGING=1
+export FLASHRL_LOGGING_LEVEL=DEBUG
+export FLASHRL_CONFIG='fp8'
+export FLASHRL_LMHEAD_FP32=${FP32_LM_HEAD}
+
+python3 -m verl.trainer.main_ppo \
+    algorithm.adv_estimator=gae \
+    data.train_files=$HOME/data/gsm8k/train.parquet \
+    data.val_files=$HOME/data/gsm8k/test.parquet \
+    data.train_batch_size=256 \
+    data.max_prompt_length=1024 \
+    data.max_response_length=512 \
+    data.filter_overlong_prompts=True \
+    data.truncation='error' \
+    actor_rollout_ref.model.path=Qwen/Qwen2.5-0.5B-Instruct \
+    actor_rollout_ref.actor.optim.lr=1e-6 \
+    actor_rollout_ref.model.use_remove_padding=False \
+    actor_rollout_ref.actor.ppo_mini_batch_size=64 \
+    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=4 \
+    actor_rollout_ref.actor.fsdp_config.param_offload=False \
+    actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
+    actor_rollout_ref.actor.use_kl_loss=False \
+    actor_rollout_ref.actor.imp_ratio_cap=${CAP} \
+    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=4 \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
+    actor_rollout_ref.rollout.name=vllm \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
+    actor_rollout_ref.rollout.disable_log_stats=False \
+    critic.optim.lr=1e-5 \
+    critic.model.use_remove_padding=False \
+    critic.model.path=Qwen/Qwen2.5-0.5B-Instruct  \
+    critic.model.enable_gradient_checkpointing=False \
+    critic.ppo_micro_batch_size_per_gpu=4 \
+    critic.model.fsdp_config.param_offload=False \
+    critic.model.fsdp_config.optimizer_offload=False \
+    algorithm.use_kl_in_reward=False \
+    trainer.critic_warmup=0 \
+    trainer.logger=['console','wandb'] \
+    trainer.project_name="${project_name}" \
+    trainer.experiment_name="${exp_name}" \
+    trainer.n_gpus_per_node=4 \
+    trainer.val_before_train=True \
+    trainer.nnodes=1 \
+    trainer.save_freq=20 \
+    trainer.test_freq=10 \
+    trainer.total_epochs=15 2>&1 | tee $RUN_NAME.log
