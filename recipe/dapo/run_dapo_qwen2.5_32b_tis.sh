@@ -63,9 +63,9 @@ gen_tp=4
 # Please note that server mode(agent loop) hasn't return rollout_log_probs for now.
 # so currently, server mode is not supported for TIS.
 
-# To turn on TIS, you need to set the following parameters:
-# 1. rollout.calculate_log_probs=True
-# 2. rollout.imp_ratio_cap > 0 (the value can be tuned)
+# To turn on TIS, you need to set the following parameters. Note 2.0 is a hyper-parameter and can be tuned.
+#   actor_rollout_ref.actor.tis_imp_ratio_cap=2.0
+#   actor_rollout_ref.rollout.calculate_log_probs=True
 
 ray job submit --no-wait --runtime-env="${RUNTIME_ENV}" \
     --working-dir "${WORKING_DIR}" \
