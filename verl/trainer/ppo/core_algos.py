@@ -1282,7 +1282,7 @@ def compute_value_loss(
 
 
 def kl_penalty(logprob: torch.FloatTensor, ref_logprob: torch.FloatTensor, kl_penalty) -> torch.FloatTensor:
-    """Compute KL divergence given logprob and ref_logprob. Optionally using straight through to bind k2 on other 
+    """Compute KL divergence given logprob and ref_logprob. Optionally using straight through to bind k2 on other
     kl penalty compute method for unbiased KL gradient estimation.
     See more description in http://joschu.net/blog/kl-approx.html
 
@@ -1296,7 +1296,7 @@ def kl_penalty(logprob: torch.FloatTensor, ref_logprob: torch.FloatTensor, kl_pe
     forward_score = kl_penalty_forward(logprob, ref_logprob, kl_penalty)
     if not kl_penalty.endswith("+") or kl_penalty in ("mse", "k2"):
         return forward_score
-    
+
     """
     The expectation of k1 and k3 estimator is the expectaed value of KL, but the expected gradient of k1 and k3
     estimator is not the expectaed gradient of KL. On the other hand k2 estimator gives right gradient estimator, 
