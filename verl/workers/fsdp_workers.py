@@ -21,7 +21,7 @@ import logging
 import os
 import warnings
 from dataclasses import asdict
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 import psutil
@@ -72,10 +72,11 @@ from verl.utils.fsdp_utils import (
 )
 from verl.utils.import_utils import import_external_libs
 from verl.utils.model import compute_position_id_with_mask
-from verl.utils.profiler import DistProfiler, DistProfilerExtension, log_gpu_memory_usage, simple_timer
-from verl.utils.profiler.performance import reduce_timing
+from verl.utils.profiler import DistProfiler, DistProfilerExtension, ProfilerConfig, log_gpu_memory_usage, simple_timer
+from verl.utils.profiler.performance import reduce_timing, topk_reduce_ratio_min_max
 from verl.utils.py_functional import convert_to_regular_types
-from verl.workers.config import FSDPCriticConfig, FSDPEngineConfig
+from verl.workers.config import FSDPCriticConfig, FSDPEngineConfig, HFModelConfig, RolloutConfig
+from verl.workers.rollout.rollout_worker import RolloutWorker
 from verl.workers.sharding_manager.fsdp_ulysses import FSDPUlyssesShardingManager
 
 logger = logging.getLogger(__file__)
@@ -116,7 +117,6 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         Worker.__init__(self)
 
         self.config = config
-        self.profile_option = kwargs.get("profile_option", None)
         import torch.distributed
 
         if not torch.distributed.is_initialized():
@@ -170,9 +170,30 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         # We can still use ProfilerConfig for testing purpose (tests/utils/test_nvtx_profile.py)
         # as they provides DictConfig-like interface
         # The benefit of creating the dataclass config is to perform validation during __post_init__
-        profiler_config = omega_conf_to_dataclass(config.get("profiler"))
+        if self._is_actor:
+            omega_profiler_config = config.actor.get("profiler", {})
+        elif self._is_rollout:
+            # NOTE: In colocation mode, rollout config may not take effect (follow the actor config)
+            # This is for extendability in AsyncRL cases
+            omega_profiler_config = config.rollout.get("profiler", {})
+        elif self._is_ref:
+            omega_profiler_config = config.ref.get("profiler", {})
+        else:
+            raise ValueError(
+                f"Invalid role {self.role}, should be one of "
+                "['actor', 'rollout', 'ref', 'actor_rollout', 'actor_rollout_ref']"
+            )
+        # omega_profiler_config is DictConfig
+        # profiler_config is a ProfilerConfig dataclass
+        profiler_config = omega_conf_to_dataclass(omega_profiler_config, dataclass_type=ProfilerConfig)
+        if omega_profiler_config.get("tool", None) in ["npu", "nsys", "torch", "torch_memory"]:
+            tool_config = omega_conf_to_dataclass(
+                omega_profiler_config.get("tool_config", {}).get(omega_profiler_config.get("tool"))
+            )
+        else:
+            tool_config = None
         DistProfilerExtension.__init__(
-            self, DistProfiler(rank=self.rank, config=profiler_config, option=self.profile_option)
+            self, DistProfiler(rank=self.rank, config=profiler_config, tool_config=tool_config)
         )
 
         self._is_offload_param = False
@@ -236,7 +257,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
     ):
         from torch import optim
         from torch.distributed.fsdp import CPUOffload, MixedPrecision
-        from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForVision2Seq
+        from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, AutoModelForVision2Seq
 
         from verl.utils.model import get_generation_config, print_model_size, update_model_config
         from verl.utils.torch_dtypes import PrecisionType
@@ -267,6 +288,11 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         actor_model_config = AutoConfig.from_pretrained(
             local_path, trust_remote_code=trust_remote_code, attn_implementation="flash_attention_2"
         )
+        # TODO: VL models use VisionAttention, which directly uses flash_attention in transformers>=4.53
+        # which will be patched by _ulysses_flash_attention_forward, but errorly misses position_ids
+        # Maybe support Ulysses in VisionAttention in the future and remove this patch
+        if self.ulysses_sequence_parallel_size > 1 and hasattr(actor_model_config, "vision_config"):
+            actor_model_config.vision_config._attn_implementation = "eager"
 
         # patch for kimi-vl
         if getattr(actor_model_config, "model_type", None) == "kimi_vl":
@@ -291,10 +317,27 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         with init_context(), warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            if type(actor_model_config) in AutoModelForVision2Seq._model_mapping.keys():
-                actor_module_class = AutoModelForVision2Seq
+            has_remote_code = hasattr(actor_model_config, "auto_map") and any(
+                actor_model_config.architectures[0] in val for val in actor_model_config.auto_map.values()
+            )
+            if has_remote_code:
+                auto_class = next(
+                    k for k, v in actor_model_config.auto_map.items() if actor_model_config.architectures[0] in v
+                )
+                match auto_class:
+                    case "AutoModelForVision2Seq":
+                        actor_module_class = AutoModelForVision2Seq
+                    case "AutoModelForCausalLM":
+                        actor_module_class = AutoModelForCausalLM
+                    case _:
+                        actor_module_class = AutoModel
             else:
-                actor_module_class = AutoModelForCausalLM
+                if type(actor_model_config) in AutoModelForVision2Seq._model_mapping.keys():
+                    actor_module_class = AutoModelForVision2Seq
+                elif type(actor_model_config) in AutoModelForCausalLM._model_mapping.keys():
+                    actor_module_class = AutoModelForCausalLM
+                else:
+                    actor_module_class = AutoModel
 
             actor_module = actor_module_class.from_pretrained(
                 pretrained_model_name_or_path=local_path,
@@ -493,44 +536,21 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 "rollout", dp_rank=rollout_device_mesh["dp"].get_local_rank(), is_collect=is_collect
             )
 
-        if rollout_name == "hf":
-            from verl.workers.rollout import HFRollout
-            from verl.workers.sharding_manager.base import BaseShardingManager
+        rollout_config: RolloutConfig = omega_conf_to_dataclass(self.config.rollout)
+        model_config: HFModelConfig = omega_conf_to_dataclass(self.config.model, dataclass_type=HFModelConfig)
 
-            rollout = HFRollout(module=self.actor_module_fsdp, config=self.config.rollout)
-            rollout_sharding_manager = BaseShardingManager()
-            # TODO: a sharding manager that do nothing?
+        # build rollout worker inside hybrid engine
+        log_gpu_memory_usage(f"Before building {rollout_name} rollout", logger=logger)
+        rollout_worker = RolloutWorker(config=rollout_config, model_config=model_config)
+        log_gpu_memory_usage(f"After building {rollout_name} rollout", logger=logger)
 
-        elif rollout_name == "vllm":
-            from verl.workers.rollout.vllm_rollout import vLLMRollout
+        if rollout_name == "vllm":
             from verl.workers.sharding_manager.fsdp_vllm import FSDPVLLMShardingManager
 
-            log_gpu_memory_usage(f"Before building {rollout_name} rollout", logger=logger)
-            local_path = copy_to_local(self.config.model.path, use_shm=self.config.model.get("use_shm", False))
-            lora_kwargs = (
-                {"lora_kwargs": {"enable_lora": True, "max_loras": 1, "max_lora_rank": self._lora_rank}}
-                if self._is_lora
-                else {}
-            )
-            # lora_kwargs = {}
-            from verl.workers.rollout.vllm_rollout import vLLMAsyncRollout
-
-            vllm_rollout_cls = vLLMRollout if self.config.rollout.mode == "sync" else vLLMAsyncRollout
-            rollout = vllm_rollout_cls(
-                model_path=local_path,
-                config=self.config.rollout,
-                tokenizer=self.tokenizer,
-                model_hf_config=self.actor_model_config,
-                device_mesh=rollout_device_mesh,
-                trust_remote_code=trust_remote_code,
-                **lora_kwargs,
-            )
-
-            log_gpu_memory_usage(f"After building {rollout_name} rollout", logger=logger)
             full_params = torch.distributed.get_world_size() == 1
             rollout_sharding_manager = FSDPVLLMShardingManager(
                 module=self.actor_module_fsdp,
-                inference_engine=rollout.inference_engine,
+                inference_engine=rollout_worker.rollout.inference_engine,
                 model_config=self.actor_model_config,
                 rollout_config=self.config.rollout,
                 full_params=full_params,
@@ -542,8 +562,6 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             log_gpu_memory_usage("After building sharding manager", logger=logger)
 
         elif rollout_name == "sglang":
-            from verl.workers.rollout.sglang_rollout.sglang_rollout import SGLangRollout
-
             # NOTE(linjunrong): Due to recent fp8 support in SGLang. Now importing any symbol relate to
             # SGLang's model_runner would check CUDA device capability. However, due to verl's setting,
             # the main process of ray can not find any CUDA device, which would potentially lead to:
@@ -553,22 +571,11 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             # check: https://github.com/sgl-project/sglang/blob/00f42707eaddfc2c0528e5b1e0094025c640b7a0/python/sglang/srt/layers/quantization/fp8_utils.py#L76
             from verl.workers.sharding_manager.fsdp_sglang import FSDPSGLangShardingManager
 
-            local_path = copy_to_local(self.config.model.path)
-            log_gpu_memory_usage(f"Before building {rollout_name} rollout", logger=logger)
-            rollout = SGLangRollout(
-                actor_module=local_path,
-                config=self.config.rollout,
-                processing_class=self.processor if self.processor is not None else self.tokenizer,
-                model_hf_config=self.actor_model_config,
-                trust_remote_code=trust_remote_code,
-            )
-            log_gpu_memory_usage(f"After building {rollout_name} rollout", logger=logger)
-
             if torch.distributed.get_world_size() == 1:
                 self.config.rollout.load_format = "dummy_hf"
             rollout_sharding_manager = FSDPSGLangShardingManager(
                 module=self.actor_module_fsdp,
-                inference_engine=rollout._engine,
+                inference_engine=rollout_worker.rollout._engine,
                 model_config=self.actor_model_config,
                 rollout_config=self.config.rollout,
                 full_params="hf" in self.config.rollout.load_format,
@@ -581,7 +588,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         else:
             raise NotImplementedError(f"Rollout name: {self.config.rollout.name} is not supported")
 
-        return rollout, rollout_sharding_manager
+        return rollout_worker, rollout_sharding_manager
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def init_model(self):
@@ -699,9 +706,6 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
     @DistProfiler.annotate(color="red", role="actor_update")
     def update_actor(self, data: DataProto):
-        # Support all hardwares
-        data = data.to(get_device_id())
-
         assert self._is_actor
         if self._is_offload_param:
             load_fsdp_model_to_gpu(self.actor_module_fsdp)
@@ -709,6 +713,8 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             load_fsdp_optimizer(optimizer=self.actor_optimizer, device_id=get_device_id())
 
         with self.ulysses_sharding_manager:
+            data = data.to("cpu")  # data will to device with each micro batch on actor.update_policy
+
             # perform training
             with Timer(name="update_policy", logger=None) as timer:
                 metrics = self.actor.update_policy(data=data)
@@ -748,15 +754,6 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         assert self._is_rollout
 
-        meta_info = {
-            "eos_token_id": self.generation_config.eos_token_id
-            if self.generation_config is not None
-            else self.tokenizer.eos_token_id,
-            "pad_token_id": self.generation_config.pad_token_id
-            if self.generation_config is not None
-            else self.tokenizer.pad_token_id,
-        }
-        prompts.meta_info.update(meta_info)
         timing_generate = {}
         with self.rollout_sharding_manager:
             log_gpu_memory_usage("After entering rollout sharding manager", logger=logger)
@@ -769,7 +766,17 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         timing_generate.update(self.rollout_sharding_manager.timing)
         # We calculate the average timing across all ranks
         # to make sure meta_info["timing"] is the same
+        timing_generate_topk_ratio, timing_generate_min, timing_generate_max = topk_reduce_ratio_min_max(
+            timing_generate["generate_sequences"]
+        )
         timing_generate = reduce_timing(timing_generate)
+        timing_generate.update(
+            {
+                "generation_timing/max": timing_generate_max,
+                "generation_timing/min": timing_generate_min,
+                "generation_timing/topk_ratio": timing_generate_topk_ratio,
+            }
+        )
         output.meta_info["timing"] = timing_generate
         output = output.to("cpu")
 
@@ -791,7 +798,6 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         is_lora = data.meta_info.pop("is_lora", False)
         adapter_ctx = self.actor.actor_module.disable_adapter() if is_lora else nullcontext()
-        data = data.to(get_device_id())
         # we should always recompute old_log_probs when it is HybridEngine
         data.meta_info["micro_batch_size"] = self.config.rollout.log_prob_micro_batch_size_per_gpu
         data.meta_info["max_token_len"] = self.config.rollout.log_prob_max_token_len_per_gpu
@@ -832,8 +838,6 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         assert self._is_ref
         # else:
         # otherwise, the class have a standalone ref model
-        # Support all hardwares
-        data = data.to(get_device_id())
 
         micro_batch_size = self.config.ref.log_prob_micro_batch_size_per_gpu
         data.meta_info["micro_batch_size"] = micro_batch_size
@@ -841,6 +845,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         data.meta_info["max_token_len"] = self.config.ref.log_prob_max_token_len_per_gpu
         data.meta_info["use_dynamic_bsz"] = self.config.ref.log_prob_use_dynamic_bsz
         with self.ulysses_sharding_manager:
+            data = data.to("cpu")  # data will to device with each micro batch on ref.compute_log_prob
             output, _ = self.ref_policy.compute_log_prob(data=data, calculate_entropy=False)
             output = DataProto.from_dict(tensors={"ref_log_prob": output})
 
@@ -935,11 +940,36 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         """Stop profiling for the current rank in the current training step."""
         self.profiler.stop()
 
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def dump_memory_snapshot(self, tag: str = "manual", sub_dir: str = None) -> None:
+        """Manually trigger a CUDA memory snapshot dump on all ranks."""
+        # Memory snapshot is now handled by the profiler system
+        # This method is kept for backward compatibility but delegates to profiler
+        if hasattr(self, "profiler") and hasattr(self.profiler, "_impl"):
+            try:
+                # Try to use the profiler's memory snapshot functionality
+                if hasattr(self.profiler._impl, "sampler"):
+                    out_dir = OmegaConf.select(self.config, "actor.profiler.save_path") or "."
+                    self.profiler._impl.sampler.dump_memory_snapshot(out_dir=out_dir, tag=tag, sub_dir=sub_dir)
+            except Exception:
+                # silently ignore if profiler doesn't support memory snapshots
+                pass
+
 
 class CriticWorker(Worker, DistProfilerExtension):
     def __init__(self, config: FSDPCriticConfig):
         Worker.__init__(self)
-        DistProfilerExtension.__init__(self, DistProfiler(rank=self.rank, config=config.get("profiler")))
+        omega_profiler_config = config.get("profiler", {})
+        profiler_config = omega_conf_to_dataclass(omega_profiler_config, dataclass_type=ProfilerConfig)
+        if omega_profiler_config.get("tool", None) in ["npu", "nsys", "torch", "torch_memory"]:
+            tool_config = omega_conf_to_dataclass(
+                omega_profiler_config.get("tool_config", {}).get(omega_profiler_config.get("tool"))
+            )
+        else:
+            tool_config = None
+        DistProfilerExtension.__init__(
+            self, DistProfiler(rank=self.rank, config=profiler_config, tool_config=tool_config)
+        )
         import torch.distributed
 
         self.config = config
@@ -1047,6 +1077,12 @@ class CriticWorker(Worker, DistProfilerExtension):
             attn_implementation="flash_attention_2",
             trust_remote_code=config.model.get("trust_remote_code", False),
         )
+        # TODO: VL models use VisionAttention, which directly uses flash_attention in transformers>=4.53
+        # which will be patched by _ulysses_flash_attention_forward, but errorly misses position_ids
+        # Maybe support Ulysses in VisionAttention in the future and remove this patch
+        if self.ulysses_sequence_parallel_size > 1 and hasattr(critic_model_config, "vision_config"):
+            critic_model_config.vision_config._attn_implementation = "eager"
+
         critic_model_config.num_labels = 1
         # patch for kimi-vl
         if getattr(critic_model_config, "model_type", None) == "kimi_vl":
@@ -1242,9 +1278,6 @@ class CriticWorker(Worker, DistProfilerExtension):
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="critic"))
     @DistProfiler.annotate(color="cyan")
     def compute_values(self, data: DataProto):
-        # Support all hardwares
-        data = data.to(get_device_id())
-
         if self._is_offload_param:
             load_fsdp_model_to_gpu(self.critic_module)
         micro_batch_size = self.config.forward_micro_batch_size_per_gpu
@@ -1253,6 +1286,7 @@ class CriticWorker(Worker, DistProfilerExtension):
         data.meta_info["use_dynamic_bsz"] = self.config.use_dynamic_bsz
         # perform forward computation
         with self.ulysses_sharding_manager:
+            data = data.to("cpu")  # data will to device with each micro batch on critic.compute_values
             values = self.critic.compute_values(data=data)
             output = DataProto.from_dict(tensors={"values": values})
 
@@ -1264,8 +1298,6 @@ class CriticWorker(Worker, DistProfilerExtension):
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="critic"))
     @DistProfiler.annotate(color="pink")
     def update_critic(self, data: DataProto):
-        # Support all hardwares
-        data = data.to(get_device_id())
         if self._is_offload_param:
             load_fsdp_model_to_gpu(self.critic_module)
         if self._is_offload_optimizer:
@@ -1273,6 +1305,7 @@ class CriticWorker(Worker, DistProfilerExtension):
 
         # perform forward computation
         with self.ulysses_sharding_manager:
+            data = data.to("cpu")  # data will to device with each micro batch on critic.update_critic
             with Timer(name="update_critic", logger=None) as timer:
                 metrics = self.critic.update_critic(data=data)
             delta_time = timer.last
@@ -1337,8 +1370,18 @@ class RewardModelWorker(Worker, DistProfilerExtension):
 
     def __init__(self, config):
         Worker.__init__(self)
+
+        omega_profiler_config = config.get("profiler", {})
+        profiler_config = omega_conf_to_dataclass(omega_profiler_config, dataclass_type=ProfilerConfig)
+        if omega_profiler_config.get("tool", None) in ["npu", "nsys", "torch", "torch_memory"]:
+            tool_config = omega_conf_to_dataclass(
+                omega_profiler_config.get("tool_config", {}).get(omega_profiler_config.get("tool"))
+            )
+        else:
+            tool_config = None
         DistProfilerExtension.__init__(
-            self, DistProfiler(rank=self.rank, config=omega_conf_to_dataclass(config.get("profiler")))
+            self,
+            DistProfiler(rank=self.rank, config=profiler_config, tool_config=tool_config),
         )
 
         import torch.distributed
@@ -1686,7 +1729,7 @@ class RewardModelWorker(Worker, DistProfilerExtension):
 # ================================= Async related workers =================================
 class AsyncActorRolloutRefWorker(ActorRolloutRefWorker):
     def _build_rollout(self, trust_remote_code=False):
-        rollout, rollout_sharding_manager = super()._build_rollout(trust_remote_code)
+        rollout_worker, rollout_sharding_manager = super()._build_rollout(trust_remote_code)
 
         # NOTE: rollout is not actually initialized here, it's deferred
         # to be initialized by AsyncvLLMServer.
@@ -1696,9 +1739,9 @@ class AsyncActorRolloutRefWorker(ActorRolloutRefWorker):
         self.vllm_tp_rank = int(os.environ["RANK"]) % self.vllm_tp_size
 
         # used for sleep/wake_up
-        rollout.sharding_manager = rollout_sharding_manager
+        rollout_worker.rollout.sharding_manager = rollout_sharding_manager
 
-        return rollout, rollout_sharding_manager
+        return rollout_worker, rollout_sharding_manager
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def generate_sequences(self, prompts: DataProto):
@@ -1723,20 +1766,24 @@ class AsyncActorRolloutRefWorker(ActorRolloutRefWorker):
         return ret
 
     @register(dispatch_mode=Dispatch.DIRECT_ROLLOUT_METHOD, blocking=False)
-    async def generate(self, prompt_ids: list[int], sampling_params: dict[str, Any], request_id: str) -> list[int]:
-        ret = await self.rollout.generate(prompt_ids, sampling_params, request_id)
+    async def generate(
+        self,
+        prompt_ids: list[int],
+        sampling_params: dict[str, Any],
+        request_id: str,
+        image_data: Optional[list[Any]] = None,
+    ) -> list[int]:
+        ret = await self.rollout.generate(prompt_ids, sampling_params, request_id, image_data=image_data)
         return ret
 
     @register(dispatch_mode=Dispatch.DIRECT_ROLLOUT_METHOD)
     async def wake_up(self):
-        if self.config.rollout.free_cache_engine:
-            await self.rollout.wake_up()
+        await self.rollout.wake_up()
         # return something to block the caller
         return True
 
     @register(dispatch_mode=Dispatch.DIRECT_ROLLOUT_METHOD)
     async def sleep(self):
-        if self.config.rollout.free_cache_engine:
-            await self.rollout.sleep()
+        await self.rollout.sleep()
         # return something to block the caller
         return True
