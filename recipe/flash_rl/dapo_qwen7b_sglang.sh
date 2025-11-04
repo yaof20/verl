@@ -40,10 +40,13 @@ NNODES=${NNODES:-1}
 echo "NNODES: ${NNODES}"
 
 # Paths
-MODEL_PATH=/mnt/public/share/open_source_model/Qwen2.5/Qwen2.5-7B-Instruct
+# MODEL_PATH=/mnt/public/share/open_source_model/Qwen2.5/Qwen2.5-7B-Instruct
+MODEL_PATH=/mnt/weka/home/feng/FlashRLTest_new/verl/models/Qwen2.5-7B-Instruct
 CKPTS_DIR=${CKPTS_DIR:-"${WORKING_DIR}/ckpts/${project_name}/${exp_name}"}
-TRAIN_FILE="/mnt/public/share/users/lijunyong-share/data/DAPO-Math-17k/data/dapo-math-17k.parquet"
-TEST_FILE="/mnt/public/share/users/lijunyong-share/data/AIME-2024/data/aime-2024.parquet"
+# TRAIN_FILE="/mnt/public/share/users/lijunyong-share/data/DAPO-Math-17k/data/dapo-math-17k.parquet"
+TRAIN_FILE="/mnt/weka/home/feng/FlashRLTest_new/verl/data/dapo-math-17k.parquet"
+# TEST_FILE="/mnt/public/share/users/lijunyong-share/data/AIME-2024/data/aime-2024.parquet"
+TEST_FILE="/mnt/weka/home/feng/FlashRLTest_new/verl/data/aime-2024.parquet"
 
 # Algorithm
 temperature=1.0
@@ -63,11 +66,11 @@ gen_tp=1
 export SWANLAB_API_KEY=2NY8CTqTXr48lxMiUjCTZ
 
 # Set ray env and activate venv
-export MASTER_ADDR=$MLP_WORKER_0_HOST
-export MASTER_PORT=$MLP_WORKER_0_PORT
-export RANK=$MLP_ROLE_INDEX
-export WORLD_SIZE=$MLP_WORKER_NUM
-source ${WORKING_DIR}/../.venv/bin/activate
+# export MASTER_ADDR=$MLP_WORKER_0_HOST
+# export MASTER_PORT=$MLP_WORKER_0_PORT
+# export RANK=$MLP_ROLE_INDEX
+# export WORLD_SIZE=$MLP_WORKER_NUM
+# source ${WORKING_DIR}/../.venv/bin/activate
 
 ray stop
 if [ ${RANK:-0} -eq 0 ]; then
@@ -138,7 +141,7 @@ if [ ${RANK:-0} -eq 0 ]; then
     reward_model.overlong_buffer.enable=${enable_overlong_buffer} \
     reward_model.overlong_buffer.len=${overlong_buffer_len} \
     reward_model.overlong_buffer.penalty_factor=${overlong_penalty_factor} \
-    trainer.logger=['console','swanlab'] \
+    trainer.logger=['console'] \
     trainer.project_name="${project_name}" \
     trainer.experiment_name="${exp_name}" \
     trainer.n_gpus_per_node=8 \
