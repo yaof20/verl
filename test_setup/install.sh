@@ -16,6 +16,23 @@ pip install -U "ray[default]"  # after install vllm, there will be some conflict
 #   "opentelemetry-proto==1.38.0" "opentelemetry-semantic-conventions==0.59b0" \
 #   "opentelemetry-exporter-prometheus==0.59b0"
 
+# also remember to add `import flash_rl` to both `verl/__init__.py` and `sglang/srt/model_loader/__init__.py` as follows:
+# ```python
+# def get_model(
+#     *,
+#     model_config: ModelConfig,
+#     load_config: LoadConfig,
+#     device_config: DeviceConfig,
+# ) -> nn.Module:
+#     import flash_rl
+#     loader = get_model_loader(load_config)
+#     return loader.load_model(
+#         model_config=model_config,
+#         device_config=device_config,
+#     )
+# ```
+
+
 
 # prepare data and model
 bash test_setup/prepare.sh
