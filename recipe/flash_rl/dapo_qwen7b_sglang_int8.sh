@@ -78,6 +78,7 @@ export SWANLAB_API_KEY=2NY8CTqTXr48lxMiUjCTZ
 export FLASHRL_CONFIG=/mnt/weka/home/feng/FlashRLTest_new/verl/test_setup/flashrl_config.yaml
 export SGLANG_PATCH=1
 export FLASHRL_LOGGING_LEVEL=DEBUG
+export PYTHONNOUSERSITE=1
 
 ray stop
 if [ ${RANK:-0} -eq 0 ]; then

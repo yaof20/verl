@@ -2,5 +2,5 @@ configs:
 - distributed_executor_backend: external_launcher
   fn: int8
   load_format: auto
-  model: RedHatAI/Qwen2.5-7B-quantized.w8a8
+  model: /mnt/weka/home/feng/FlashRLTest_new/verl/models/Qwen2.5-7B-quantized
   profile: /mnt/weka/home/feng/FlashRLTest_new/verl/test_setup/profile.7b.pt
