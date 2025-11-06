@@ -47,7 +47,7 @@ pip install -e . --no-deps
 
 # prepare quantization
 cd ../verl/test_setup
-hf download RedHatAI/Qwen2.5-7B-quantized.w8a8 --local-dir ./models/Qwen2.5-7B-quantized
+hf download RedHatAI/Qwen2.5-7B-Instruct-quantized.w8a8 --local-dir ./models/Qwen2.5-7B-quantized
 flashrl profile -m Qwen/Qwen2.5-7B-Instruct -q RedHatAI/Qwen2.5-7B-quantized.w8a8 -o ${PROFILE_PATH:-"$PWD/profile.7b.pt"} --fn int8
 flashrl setup -m ./models/Qwen2.5-7B-quantized -p $PWD/profile.7b.pt --fn int8 -o ${CONFIG_PATH:-"$PWD/flashrl_config.yaml"}
 
